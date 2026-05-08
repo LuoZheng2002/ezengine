@@ -1,18 +1,19 @@
 use std::{borrow::Cow, sync::Arc};
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
+use ezengine_core::{Color, Rect};
+use ezengine_ui::ButtonVisual;
 use winit::{dpi::PhysicalSize, window::Window};
 
 const SHADER_SOURCE: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) color: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) color: vec4<f32>,
 };
 
 @vertex
@@ -25,7 +26,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.color, 1.0);
+    return input.color;
 }
 "#;
 
@@ -33,7 +34,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
     position: [f32; 2],
-    color: [f32; 3],
+    color: [f32; 4],
 }
 
 impl Vertex {
@@ -46,7 +47,7 @@ impl Vertex {
         wgpu::VertexAttribute {
             offset: 8,
             shader_location: 1,
-            format: wgpu::VertexFormat::Float32x3,
+            format: wgpu::VertexFormat::Float32x4,
         },
     ];
 
@@ -59,21 +60,6 @@ impl Vertex {
     }
 }
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-0.8, -0.8],
-        color: [1.0, 0.2, 0.2],
-    },
-    Vertex {
-        position: [0.8, -0.8],
-        color: [0.2, 1.0, 0.2],
-    },
-    Vertex {
-        position: [0.0, 0.8],
-        color: [0.2, 0.4, 1.0],
-    },
-];
-
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -81,7 +67,7 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    vertex_count: u32,
+    max_vertices: usize,
 }
 
 pub enum FrameResult {
@@ -126,18 +112,18 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("ezengine-triangle-shader"),
+            label: Some("ezengine-ui-shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SHADER_SOURCE)),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("ezengine-triangle-pipeline-layout"),
+            label: Some("ezengine-ui-pipeline-layout"),
             bind_group_layouts: &[],
             immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ezengine-triangle-pipeline"),
+            label: Some("ezengine-ui-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -162,10 +148,12 @@ impl Renderer {
             cache: None,
         });
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("ezengine-triangle-vertices"),
-            contents: bytemuck::cast_slice(VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
+        let max_vertices = 9;
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ezengine-dynamic-vertices"),
+            size: (std::mem::size_of::<Vertex>() * max_vertices) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         Ok(Self {
@@ -175,7 +163,7 @@ impl Renderer {
             config,
             pipeline,
             vertex_buffer,
-            vertex_count: VERTICES.len() as u32,
+            max_vertices,
         })
     }
 
@@ -189,65 +177,139 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub fn render(&mut self) -> Result<FrameResult, String> {
+    pub fn render(&mut self, button: ButtonVisual) -> FrameResult {
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => {
-                self.draw_frame(frame)?;
-                Ok(FrameResult::Presented)
+                self.draw_frame(frame, button);
+                FrameResult::Presented
             }
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                self.draw_frame(frame)?;
-                Ok(FrameResult::NeedsResize)
+                self.draw_frame(frame, button);
+                FrameResult::NeedsResize
             }
             wgpu::CurrentSurfaceTexture::Timeout
             | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => Ok(FrameResult::Skipped),
+            | wgpu::CurrentSurfaceTexture::Validation => FrameResult::Skipped,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                Ok(FrameResult::NeedsResize)
+                FrameResult::NeedsResize
             }
         }
     }
 
-    fn draw_frame(&mut self, frame: wgpu::SurfaceTexture) -> Result<(), String> {
+    fn draw_frame(&mut self, frame: wgpu::SurfaceTexture, button: ButtonVisual) {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let vertices = self.build_vertices(button);
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("ezengine-triangle-encoder"),
+                label: Some("ezengine-ui-encoder"),
             });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ezengine-triangle-pass"),
+                label: Some("ezengine-ui-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.08,
-                            g: 0.09,
-                            b: 0.12,
+                            r: 0.07,
+                            g: 0.08,
+                            b: 0.10,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: None,
+                timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
-                timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
+            pass.draw(0..vertices.len() as u32, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
-        Ok(())
     }
+
+    fn build_vertices(&self, button: ButtonVisual) -> Vec<Vertex> {
+        let mut vertices = Vec::with_capacity(self.max_vertices);
+        vertices.extend_from_slice(&[
+            Vertex {
+                position: [-0.82, -0.82],
+                color: [1.0, 0.25, 0.25, 1.0],
+            },
+            Vertex {
+                position: [0.82, -0.82],
+                color: [0.25, 1.0, 0.25, 1.0],
+            },
+            Vertex {
+                position: [0.0, 0.82],
+                color: [0.25, 0.4, 1.0, 1.0],
+            },
+        ]);
+
+        let button_vertices = rect_to_vertices(
+            button.bounds,
+            button.color,
+            self.config.width,
+            self.config.height,
+        );
+        vertices.extend_from_slice(&button_vertices);
+        vertices
+    }
+}
+
+fn rect_to_vertices(rect: Rect, color: Color, width: u32, height: u32) -> [Vertex; 6] {
+    let left = normalized_x(rect.origin.x, width);
+    let right = normalized_x(rect.origin.x + rect.size.width, width);
+    let top = normalized_y(rect.origin.y, height);
+    let bottom = normalized_y(rect.origin.y + rect.size.height, height);
+
+    let color = [color.r, color.g, color.b, color.a];
+
+    [
+        Vertex {
+            position: [left, bottom],
+            color,
+        },
+        Vertex {
+            position: [right, bottom],
+            color,
+        },
+        Vertex {
+            position: [right, top],
+            color,
+        },
+        Vertex {
+            position: [left, bottom],
+            color,
+        },
+        Vertex {
+            position: [right, top],
+            color,
+        },
+        Vertex {
+            position: [left, top],
+            color,
+        },
+    ]
+}
+
+fn normalized_x(x: f32, width: u32) -> f32 {
+    (x / width as f32) * 2.0 - 1.0
+}
+
+fn normalized_y(y: f32, height: u32) -> f32 {
+    1.0 - (y / height as f32) * 2.0
 }

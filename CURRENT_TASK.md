@@ -1,7 +1,8 @@
-Start from replicating `Editor::run()`.
+Split the project into a small Fyrox-like workspace first.
 
-Milestone 1 implemented:
-1. `src/bin/bin_test_editor.rs` calls `Editor::run()` and boots a `winit` event loop plus a `wgpu` graphics context.
-2. The editor renders a simple color-gradient triangle.
-3. The code is still intentionally small so we can split it into `ezengine-*` crates later.
-4. Everything outside this milestone should remain marked with `// todo` in the code.
+Current milestone:
+1. `ezengine-core` holds shared primitives.
+2. `ezengine-ui` holds the tiny UI graph and button builders.
+3. `ezengine-editor` owns the editor loop, renderer, and binary entry point.
+4. The editor now has a simple button with hover and click feedback.
+5. Next, extend the UI graph only as needed and keep the structure close to Fyrox.

@@ -388,13 +388,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "ezengine"
+name = "ezengine-core"
+version = "0.1.0"
+
+[[package]]
+name = "ezengine-editor"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "ezengine-core",
+ "ezengine-ui",
  "pollster",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "ezengine-ui"
+version = "0.1.0"
+dependencies = [
+ "ezengine-core",
 ]
 
 [[package]]
