@@ -9,7 +9,6 @@ The major difference we target is:
 4. Use wgpu as the only graphics backend, so we do not do polymorphism on graphics backends.
 5. Target only Windows platform, but do not use Windows-specific crates.
 
-Deliberate discrepancy from Fyrox:
-1. The UI layer in this prototype uses direct callback subscriptions on nodes instead of Fyrox-style routed UI messages.
-2. Button instances are referenced directly through `Arc<AtomicRefCell<dyn UiNode>>` instead of a separate handle/pool indirection.
-3. Button callbacks can be subscribed and unsubscribed dynamically via a `Subscription(usize)` id.
+The progress is in PROGRESS.md.
+The current task is in CURRENT_TASK.md.
+You should update both files while updating the code.

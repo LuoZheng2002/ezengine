@@ -1,8 +1,8 @@
 use std::{borrow::Cow, sync::Arc};
 
 use bytemuck::{Pod, Zeroable};
-use ezengine_core::{Color, Rect};
-use ezengine_ui::ButtonVisual;
+use ezengine_core::{Brush, Point};
+use ezengine_ui::DrawCommand;
 use winit::{dpi::PhysicalSize, window::Window};
 
 const SHADER_SOURCE: &str = r#"
@@ -177,14 +177,14 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, button: ButtonVisual) -> FrameResult {
+    pub fn render(&mut self, commands: &[DrawCommand]) -> FrameResult {
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => {
-                self.draw_frame(frame, button);
+                self.draw_frame(frame, commands);
                 FrameResult::Presented
             }
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                self.draw_frame(frame, button);
+                self.draw_frame(frame, commands);
                 FrameResult::NeedsResize
             }
             wgpu::CurrentSurfaceTexture::Timeout
@@ -196,12 +196,12 @@ impl Renderer {
         }
     }
 
-    fn draw_frame(&mut self, frame: wgpu::SurfaceTexture, button: ButtonVisual) {
+    fn draw_frame(&mut self, frame: wgpu::SurfaceTexture, commands: &[DrawCommand]) {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let vertices = self.build_vertices(button);
+        let vertices = self.build_vertices(commands);
         self.queue
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
@@ -242,7 +242,7 @@ impl Renderer {
         frame.present();
     }
 
-    fn build_vertices(&self, button: ButtonVisual) -> Vec<Vertex> {
+    fn build_vertices(&self, commands: &[DrawCommand]) -> Vec<Vertex> {
         let mut vertices = Vec::with_capacity(self.max_vertices);
         vertices.extend_from_slice(&[
             Vertex {
@@ -259,51 +259,39 @@ impl Renderer {
             },
         ]);
 
-        let button_vertices = rect_to_vertices(
-            button.bounds,
-            button.color,
+        vertices.extend(command_vertices(
+            commands,
             self.config.width,
             self.config.height,
-        );
-        vertices.extend_from_slice(&button_vertices);
+        ));
         vertices
     }
 }
 
-fn rect_to_vertices(rect: Rect, color: Color, width: u32, height: u32) -> [Vertex; 6] {
-    let left = normalized_x(rect.origin.x, width);
-    let right = normalized_x(rect.origin.x + rect.size.width, width);
-    let top = normalized_y(rect.origin.y, height);
-    let bottom = normalized_y(rect.origin.y + rect.size.height, height);
+fn command_vertices(commands: &[DrawCommand], width: u32, height: u32) -> Vec<Vertex> {
+    let mut vertices = Vec::new();
+    let mut pending_positions: Vec<Point> = Vec::new();
+    for command in commands {
+        match command {
+            DrawCommand::PushVertex(vertex) => pending_positions.push(vertex.position),
+            DrawCommand::Commit { brush } => {
+                vertices.extend(pending_positions.drain(..).map(|position| Vertex {
+                    position: [
+                        normalized_x(position.x, width),
+                        normalized_y(position.y, height),
+                    ],
+                    color: color_to_rgba(brush),
+                }));
+            }
+        }
+    }
 
-    let color = [color.r, color.g, color.b, color.a];
+    vertices
+}
 
-    [
-        Vertex {
-            position: [left, bottom],
-            color,
-        },
-        Vertex {
-            position: [right, bottom],
-            color,
-        },
-        Vertex {
-            position: [right, top],
-            color,
-        },
-        Vertex {
-            position: [left, bottom],
-            color,
-        },
-        Vertex {
-            position: [right, top],
-            color,
-        },
-        Vertex {
-            position: [left, top],
-            color,
-        },
-    ]
+fn color_to_rgba(brush: &Brush) -> [f32; 4] {
+    let color = brush.to_color();
+    [color.r, color.g, color.b, color.a]
 }
 
 fn normalized_x(x: f32, width: u32) -> f32 {

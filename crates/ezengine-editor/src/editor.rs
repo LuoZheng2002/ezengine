@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ezengine_core::{Point, Rect, Size};
-use ezengine_ui::{ButtonBuilder, UiHandle, UserInterface, WidgetBuilder};
+use ezengine_ui::{ButtonBuilder, UiNodeRef, UserInterface, WidgetBuilder};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, WindowEvent},
@@ -28,7 +28,8 @@ struct EditorApp {
     window_id: Option<WindowId>,
     renderer: Option<Renderer>,
     ui: Option<UserInterface>,
-    button: Option<UiHandle>,
+    button: Option<UiNodeRef>,
+    button_subscription: Option<ezengine_ui::Subscription>,
 }
 
 impl EditorApp {
@@ -58,10 +59,16 @@ impl ApplicationHandler for EditorApp {
             width: size.width as f32,
             height: size.height as f32,
         });
-        let button = ButtonBuilder::new(
-            WidgetBuilder::new().with_bounds(self.button_rect()),
-        )
-        .build(&mut ui);
+        // Keep a direct node reference here so the editor can render the button without a handle table.
+        let button = ButtonBuilder::new(WidgetBuilder::new().with_bounds(self.button_rect())).build(
+            &mut ui,
+        );
+
+        let button_subscription = ui
+            .subscribe_button(&button, || {
+                println!("button clicked");
+            })
+            .expect("button subscription failed");
 
         let renderer = pollster::block_on(Renderer::new(window.clone()))
             .expect("failed to initialize the wgpu renderer");
@@ -70,6 +77,7 @@ impl ApplicationHandler for EditorApp {
         self.renderer = Some(renderer);
         self.ui = Some(ui);
         self.button = Some(button);
+        self.button_subscription = Some(button_subscription);
         self.window = Some(window);
     }
 
@@ -89,6 +97,7 @@ impl ApplicationHandler for EditorApp {
 
         match event {
             WindowEvent::CloseRequested => {
+                // The subscription can be removed later if the editor needs to disconnect the callback.
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -108,16 +117,6 @@ impl ApplicationHandler for EditorApp {
                         x: position.x as f32,
                         y: position.y as f32,
                     });
-                    for message in ui.drain_messages() {
-                        match message.kind {
-                            ezengine_ui::UiMessageKind::HoverChanged(hovered) => {
-                                println!("button hover: {hovered}");
-                            }
-                            ezengine_ui::UiMessageKind::Clicked => {
-                                println!("button clicked");
-                            }
-                        }
-                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -127,22 +126,14 @@ impl ApplicationHandler for EditorApp {
             } => {
                 if let Some(ui) = self.ui.as_mut() {
                     ui.handle_mouse_button(state == ElementState::Pressed);
-                    for message in ui.drain_messages() {
-                        if let ezengine_ui::UiMessageKind::Clicked = message.kind {
-                            println!("button clicked");
-                        }
-                    }
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(renderer), Some(ui), Some(button)) =
-                    (self.renderer.as_mut(), self.ui.as_ref(), self.button)
+                if let (Some(renderer), Some(ui)) = (self.renderer.as_mut(), self.ui.as_ref())
                 {
-                    let Some(button_visual) = ui.button_visual(button) else {
-                        return;
-                    };
-
-                    match renderer.render(button_visual) {
+                    let draw_commands = ui.draw_commands();
+                    // The renderer consumes the UI's command stream every frame.
+                    match renderer.render(&draw_commands) {
                         FrameResult::Presented => {}
                         FrameResult::NeedsResize => {
                             if let Some(window) = self.window.as_ref() {
